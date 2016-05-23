@@ -4,6 +4,8 @@ This package provides server-to-server syncing of collections. It is
 modeled along the lines of what clients do, too, i.e., collections are
 locally cached, in case the remote server gets disconnected.
 
+# How it Works
+
 This uses DDP.connect to connect to a remote server and subscribe to
 collections on it, but also caches that collection in the local
 mongodb. It gracefully handles periods of being disconnected, incl.

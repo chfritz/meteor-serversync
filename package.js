@@ -17,6 +17,6 @@ Package.onUse(function(api) {
 Package.onTest(function(api) {
   api.use('ecmascript');
   api.use('tinytest');
-  api.use('serversync');
+  api.use('chfritz:serversync');
   api.mainModule('serversync-tests.js');
 });
