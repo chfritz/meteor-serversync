@@ -1,3 +1,5 @@
+import { Meteor } from "meteor/meteor";
+import { DDP } from "meteor/ddp-client";
 
 // Variables exported by this module can be imported by other packages and
 // applications. See meteor-serversync-tests.js for an example of importing.
@@ -82,6 +84,7 @@ export default class ServerSyncClient {
     this._collections[collectionName].subcription = subscription;
     
     console.log("ready?", subscription.ready());
+   
 
     // ---------------------------------------------------------
 

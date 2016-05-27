@@ -11,6 +11,8 @@ Package.describe({
 Package.onUse(function(api) {
   api.versionsFrom('1.3.2.4');
   api.use('ecmascript');
+  api.use('underscore');
+  api.use('mongo');
   api.mainModule('serversync.js');
 });
 
