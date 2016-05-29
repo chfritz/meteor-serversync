@@ -9,9 +9,10 @@ import { DDP } from "meteor/ddp-client";
 export default class ServerSyncClient {
 
   /** establish the connection and setup onReconnect handler */
-  constructor(URL) {
+  constructor(URL, onConnected) {
     const self = this;
 
+    this._initialized = false;
     this._connection = DDP.connect(URL);
     this._connection.onReconnect = function() {
       // #HERE: can we update the query of the existing subscriptions
@@ -21,11 +22,17 @@ export default class ServerSyncClient {
       // there: timestamp all docs with updated time
 
       console.log("reconnected");
+
+      if (!this._initialized) {
+        onConnected && onConnected();
+        this._initialized = true;
+      } else {      
       // Note: on reconnect, Meteor will perform a complete refresh of
       // the remote collections, i.e., it will remove all items and
       // re-add them. This also means that DDP.connect + subscribe are
       // only useful for fairly small collections (in terms of bytes).
-      self._syncDirty();
+        self._syncDirty();
+      }
     }
 
     // objects of the form { remote: .. , local: .., subscription: ..,
@@ -50,7 +57,7 @@ export default class ServerSyncClient {
     const query = options.query || {};
 
     this._connection.reconnect();
-    if (this._connection.status().connected) {
+    if (!this._connection.status().connected) {
       console.log("not connected", this._connection.status());
       return false;
     }
@@ -80,12 +87,25 @@ export default class ServerSyncClient {
     }
     this._collections[collectionName].local = localCollection;
 
-    const subscription = this._connection.subscribe(collectionName);
+    const subscription = this._connection.subscribe(collectionName, {
+      onReady: function() {
+        console.log("onReady", collectionName);
+        self._ready = true;
+        if (options.onReady) {
+          options.onReady();
+        }
+
+        collectionName && self._syncDirty(collectionName);
+      },
+      onError: function(e) { 
+        console.log("onError", e);
+      },
+      onStop: function(e) { 
+        console.log("onStop", e);
+      }
+    });
     this._collections[collectionName].subcription = subscription;
     
-    console.log("ready?", subscription.ready());
-   
-
     // ---------------------------------------------------------
 
     // sync down (from remote to local)
@@ -125,12 +145,6 @@ export default class ServerSyncClient {
       }
     });
 
-    // console.log("ready?", subscription.ready()); 
-    // ^not implemented for server-to-server?
-    this._ready = true;
-    if (options.onReady) {
-      options.onReady();
-    }
 
     // ---------------------------------------------------------
 
@@ -152,6 +166,7 @@ export default class ServerSyncClient {
               console.log("added to remote");
             } else {
               // can't sync this right now, add to change set
+              console.log("insert queued until reconnect");
               self._changeSets.local[id] = { 
                 collectionName: collectionName,
                 obj: obj
@@ -217,9 +232,9 @@ export default class ServerSyncClient {
 
 
   /** sync dirty things, but only if not changed remotely */
-  _syncDirty() {
+  _syncDirty(collectionName) {
     const self = this;
-    console.log("_syncDirty");
+    console.log("_syncDirty", collectionName);
     
     // locally inserted or changed
     // _.each(this.localCollections, function(localCollection, name) {
@@ -260,10 +275,12 @@ export default class ServerSyncClient {
     // this._locallyDeleted = [];
 
     _.each(self._changeSets.local, function(changeInfo) {
-      const remoteCollection = 
-        self._collections[changeInfo.collectionName].remote;
-      remoteCollection.insert(changeInfo.obj);
-      console.log("added remotely:", changeInfo.obj);
+      if (changeInfo.collectionName == collectionName) { // TODO: make this efficient
+        const remoteCollection = 
+          self._collections[changeInfo.collectionName].remote;
+        remoteCollection.insert(changeInfo.obj);
+        console.log("added remotely:", changeInfo.obj);
+      }
     });
 
 
