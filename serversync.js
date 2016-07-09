@@ -5,6 +5,8 @@ import { DDP } from "meteor/ddp-client";
 // applications. See meteor-serversync-tests.js for an example of importing.
 // export const name = 'chfritz:serversync';
 
+
+
 /** Server code */
 export default class ServerSyncClient {
 
@@ -20,6 +22,7 @@ export default class ServerSyncClient {
       // And/Or implement a remote counter part after all?
       // (ServerSyncServer)
       // there: timestamp all docs with updated time
+      // - use https://atmospherejs.com/matb33/collection-hooks to decorate
 
       console.log("reconnected");
 
@@ -57,10 +60,10 @@ export default class ServerSyncClient {
     const query = options.query || {};
 
     this._connection.reconnect();
-    if (!this._connection.status().connected) {
-      console.log("not connected", this._connection.status());
-      return false;
-    }
+    // if (!this._connection.status().connected) {
+    //   console.log("not connected", this._connection.status());
+    //   return false;
+    // }
 
     // check(collectionName, String);
     if (_.has(this._collections, collectionName)) {
