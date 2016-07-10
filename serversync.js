@@ -122,6 +122,7 @@ export default class ServerSyncClient {
           localCollection.upsert(id, obj);
           console.log("added by remote");
         } else {
+          // this remote addition just confirms the local addition
           delete self._changeSets.local[id];
         }
       },
@@ -130,6 +131,8 @@ export default class ServerSyncClient {
         if (!self._changeSets.local[id]) {
           var obj = fields;
           self._changeSets.remote[id] = true;
+          // remote changed invalidate local changes:
+          delete self._changeSets.local[id]; 
           localCollection.update(id, obj);
           console.log("changed by remote");
         } else {
@@ -140,6 +143,8 @@ export default class ServerSyncClient {
       removed(id) {
         if (!self._changeSets.local[id]) {
           self._changeSets.remote[id] = true;
+          // remote changed invalidate local changes:
+          delete self._changeSets.local[id]; 
           localCollection.remove(id);
           console.log("removed by remote");
         } else {
@@ -158,7 +163,9 @@ export default class ServerSyncClient {
         added(id, fields) {
           if (!self._changeSets.remote[id]) {
             // this addition was not initiated by remote; sync up remote
-            self._changeSets.local[id] = true;
+            self._changeSets.local[id] = { 
+                collectionName: collectionName
+            };
             var obj = fields;
             obj._id = id;
 
@@ -168,10 +175,8 @@ export default class ServerSyncClient {
             } else {
               // can't sync this right now, add to change set
               console.log("insert queued until reconnect", id);
-              self._changeSets.local[id] = { 
-                collectionName: collectionName,
-                obj: obj
-              };
+              self._changeSets.local[id].obj = obj;
+              self._changeSets.local[id].action = "insert";
             }
           } else {
             // acknowledged, clear flag for next update
@@ -182,18 +187,23 @@ export default class ServerSyncClient {
         changed(id, fields) {
           if (!self._changeSets.remote[id]) {
             // this change was not initiated by remote; sync up remote
-            // self._changeSets.local[id] = true;
+            self._changeSets.local[id] = { 
+                collectionName: collectionName
+            };
 
             if (self._ready && self._connection.status().connected) {
               var obj = fields;
               // obj._updated = Date.now();
-              delete obj._dirty;
+              // delete obj._dirty;
               remoteCollection.update(id, obj);
               console.log("changed in remote");
             } else {
               // localCollection.update(id, {$set: {"_dirty": true}});
-              console.warn("cannot reach server, not updating;",
-                           "local change will be lost on reconnect");
+              // console.warn("cannot reach server, not updating;",
+                           // "local change will be lost on reconnect");
+              console.log("update queued until reconnect", id);
+              self._changeSets.local[id].obj = obj;
+              self._changeSets.local[id].action = "update";
             }
           } else {
             // else either self was just changed remotely, or it was
@@ -207,7 +217,9 @@ export default class ServerSyncClient {
         removed(id) {
           if (!self._changeSets.remote[id]) {
             // this removal was not initiated by remote; sync up remote
-            // self._changeSets.local[id] = true;
+            self._changeSets.local[id] = { 
+                collectionName: collectionName
+            };
 
             if (self._ready && self._connection.status().connected) {
               remoteCollection.remove(id);
@@ -218,8 +230,10 @@ export default class ServerSyncClient {
               //   collectionName: collectionName,
               //   id: id
               // });
-              console.warn("cannot reach server, not removing;",
-                           "local change will be lost on reconnect");
+              // console.warn("cannot reach server, not removing;",
+                           // "local change will be lost on reconnect");
+              console.log("removal queued until reconnect", id);
+              self._changeSets.local[id].action = "remove";
             }
           } else {
             // acknowledged, clear flag for next update
@@ -237,15 +251,28 @@ export default class ServerSyncClient {
     const self = this;
     console.log("_syncDirty", self._changeSets.local, collectionName);
   
-    _.each(self._changeSets.local, function(changeInfo) {
+    _.each(self._changeSets.local, function(changeInfo, id) {
+
       console.log("_syncDirty one", changeInfo, collectionName);
       if (changeInfo.collectionName == collectionName
-          || collectionName == undefined) { // TODO: make this efficient
+          || collectionName == undefined) { 
+
         const remoteCollection = 
           self._collections[changeInfo.collectionName].remote;
-        remoteCollection.insert(changeInfo.obj, function(err, res) {
-          console.log("added remotely:", changeInfo.obj, err, res);
-        });
+
+        if (changeInfo.action == "insert") {
+          remoteCollection.insert(changeInfo.obj, function(err, res) {
+            console.log("insert local -> remote:", id, err, res);
+          });
+        } else if (changeInfo.action == "update") {
+          remoteCollection.upsert(id, changeInfo.obj, function(err, res) {
+            console.log("update local -> remote:", id, err, res);
+          });
+        } else if (changeInfo.action == "remove") {
+          remoteCollection.remove(id, function(err, res) {
+            console.log("removed local -> remote:", id, err, res);
+          });
+        }
       }
     });
 
