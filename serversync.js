@@ -162,14 +162,12 @@ export default class ServerSyncClient {
             var obj = fields;
             obj._id = id;
 
-            // only take action if this wasn't just added from remote,
-            // indicated by an explicit _dirty = false field;
             if (self._ready && self._connection.status().connected) {
               remoteCollection.upsert(id, obj);
               console.log("added to remote");
             } else {
               // can't sync this right now, add to change set
-              console.log("insert queued until reconnect");
+              console.log("insert queued until reconnect", id);
               self._changeSets.local[id] = { 
                 collectionName: collectionName,
                 obj: obj
@@ -184,7 +182,7 @@ export default class ServerSyncClient {
         changed(id, fields) {
           if (!self._changeSets.remote[id]) {
             // this change was not initiated by remote; sync up remote
-            self._changeSets.local[id] = true;
+            // self._changeSets.local[id] = true;
 
             if (self._ready && self._connection.status().connected) {
               var obj = fields;
@@ -209,7 +207,7 @@ export default class ServerSyncClient {
         removed(id) {
           if (!self._changeSets.remote[id]) {
             // this removal was not initiated by remote; sync up remote
-            self._changeSets.local[id] = true;
+            // self._changeSets.local[id] = true;
 
             if (self._ready && self._connection.status().connected) {
               remoteCollection.remove(id);
@@ -237,52 +235,17 @@ export default class ServerSyncClient {
   /** sync dirty things, but only if not changed remotely */
   _syncDirty(collectionName) {
     const self = this;
-    console.log("_syncDirty", collectionName);
-    
-    // locally inserted or changed
-    // _.each(this.localCollections, function(localCollection, name) {
-
-    //   var remoteCollection = self.remoteCollections[name];
-    //   // TODO: throw error if no remoteCollection (should not happen)
-
-    //   localCollection.find({_dirty: true}, {reactive: false}).forEach(
-    //     function(dirtyDocument) {
-    //       console.log("upserting remotely:", dirtyDocument);
-    //       // update in remote collection         
-    //       remoteCollection.upsert(dirtyDocument._id, dirtyDocument);         
-    //       // now mark as _dirty: false
-    //       localCollection.update(id, {$set: {"_dirty": false}});         
-    //     });
-    // });
-
-    // locally deleted
-    // _.each(this._locallyDeleted, function(deleteInfo) {      
-    //   console.log(deleteInfo);
-
-    //   const localCollection = 
-    //     self.localCollections[deleteInfo.collectionName];
-    //   const remoteCollection = 
-    //     self.remoteCollections[deleteInfo.collectionName];
-
-    //   if (deleteInfo.id
-    //       && !localCollection.find(deleteInfo.id)
-    //      ) {
-    //     console.log("removing remotely:", deleteInfo);
-    //     // remoteCollection.remove(deleteInfo.id);
-    //   } else {
-    //     console.log(deleteInfo.collectionName, "document", 
-    //                 deleteInfo.id, 
-    //                 "has been changed remotely, not deleting");
-    //   }
-    // });
-    // this._locallyDeleted = [];
-
+    console.log("_syncDirty", self._changeSets.local, collectionName);
+  
     _.each(self._changeSets.local, function(changeInfo) {
-      if (changeInfo.collectionName == collectionName) { // TODO: make this efficient
+      console.log("_syncDirty one", changeInfo, collectionName);
+      if (changeInfo.collectionName == collectionName
+          || collectionName == undefined) { // TODO: make this efficient
         const remoteCollection = 
           self._collections[changeInfo.collectionName].remote;
-        remoteCollection.insert(changeInfo.obj);
-        console.log("added remotely:", changeInfo.obj);
+        remoteCollection.insert(changeInfo.obj, function(err, res) {
+          console.log("added remotely:", changeInfo.obj, err, res);
+        });
       }
     });
 
