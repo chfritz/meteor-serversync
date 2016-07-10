@@ -1,10 +1,8 @@
 Package.describe({
   name: 'chfritz:serversync',
-  version: '0.0.2',
+  version: '0.1',
   summary: 'Synchronize collections across multiple meteor servers (belonging to separate apps)',
   git: 'https://github.com/chfritz/meteor-serversync',
-  // By default, Meteor will default to using README.md for documentation.
-  // To avoid submitting documentation, set this field to null.
   documentation: 'README.md'
 });
 

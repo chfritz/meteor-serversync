@@ -39,4 +39,22 @@ to the sync function:
   offline, but if the server makes changes while offline, these
   changes will overwrite any local changes on reconnect.
 
+
+## Example
+
+```js
+Meteor.startup(() => {
+  // connect to master:
+  a = new ServerSyncClient("http://localhost:3000");
+  a.sync('items', {  // sync the "items" collection from the master
+    onReady: function() {
+      var coll = a.getCollection('items');
+      // do something with this collection (e.g., publish it locally)
+      console.log("ready", coll.find().count());
+    },
+    args: [Date.now()] // arguments to pass to publication function on server
+  });
+});
+```
+
 See https://github.com/chfritz/serversync-example for a full example.
