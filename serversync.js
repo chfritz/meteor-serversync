@@ -170,7 +170,7 @@ export default class ServerSyncClient {
           self._changeSets.remote[id] = true;
           // remote changes invalidates local changes:
           delete self._changeSets.local[id]; 
-          localCollection.upsert(id, obj);
+          localCollection.upsert(id, {$set: obj});
           console.log("changed by remote");
         }
       },
@@ -239,7 +239,7 @@ export default class ServerSyncClient {
             if (self._ready && self._connection.status().connected) {
               // obj._updated = Date.now();
               // delete obj._dirty;
-              remoteCollection.update(id, obj);
+              remoteCollection.upsert(id, {$set: obj});
               console.log("changed in remote");
             } else {
               // localCollection.update(id, {$set: {"_dirty": true}});
