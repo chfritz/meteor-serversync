@@ -34,9 +34,10 @@ export default class ServerSyncClient {
       // the remote collections, i.e., it will remove all items and
       // re-add them. This also means that DDP.connect + subscribe are
       // only useful for fairly small collections (in terms of bytes).
-        self._syncDirty();
+        self._rescheduleSyncDirty();
       }
     }
+
 
     // objects of the form { remote: .. , local: .., subscription: ..,
     // options: .. }
@@ -50,11 +51,30 @@ export default class ServerSyncClient {
     this._changeSets = { remote: {}, local: {} };   
   }
 
-
+  /** schedule a syncDirty for some time from now, if it is already
+      scheduled, reschedule. Each remote reschedules this. This way we
+      won't syncDirty while changes are still coming in. TODO: This is
+      a bit of a #hack. It would be better to have a signal when the
+      sync from server is all caught up.
+  */
+  _rescheduleSyncDirty() {
+    const self = this;
+    if (this._syncDirtyTimeout) {
+      Meteor.clearTimeout(this._syncDirtyTimeout);
+    }
+    this._syncDirtyTimeout = Meteor.setTimeout(function() {
+      self._syncDirty();
+    }, 2000);
+  }
 
   /** Subscribe to the given remote collection, creating a synced
-   * local copy of the result set for the given query */
-  sync(collectionName, options = {mode: "online-write"}) {
+      local copy of the result set for the given query.
+   @param collectionName: name of publication to sync with
+   @param options: an object containing:
+    - mode: "online-write" (default), or "read"
+    - args: subscription arguments (as given to Meteor.subscribe(.., args))
+   */
+  sync(collectionName, options = {mode: "online-write", args: []}) {
     const self = this;
 
     const query = options.query || {};
@@ -90,7 +110,10 @@ export default class ServerSyncClient {
     }
     this._collections[collectionName].local = localCollection;
 
-    const subscription = this._connection.subscribe(collectionName, {
+    // add subscription arguments
+    let args = options.args || [];
+    args.unshift(collectionName);
+    args.push({
       onReady: function() {
         console.log("onReady", collectionName);
         self._ready = true;
@@ -106,49 +129,66 @@ export default class ServerSyncClient {
       onStop: function(e) { 
         console.log("onStop", e);
       }
-    });
-    this._collections[collectionName].subcription = subscription;
+    });    
+    const subscription = this._connection.subscribe.apply(this._connection, args);
+    this._collections[collectionName].subscription = subscription;
     
     // ---------------------------------------------------------
 
     // sync down (from remote to local)
+    // each remote change resets the timer for syncDirty
     remoteCollection.find(query).observeChanges({
 
       added(id, fields) {
-        if (!self._changeSets.local[id]) {
+        if (self._syncDirtyTimeout) {
+          self._rescheduleSyncDirty();
+        }
+        if (self._changeSets.local[id]) {
+          // this remote addition just confirms the local addition
+          delete self._changeSets.local[id];
+        } else {
           var obj = fields;
           obj._id = id;    
           self._changeSets.remote[id] = true;
           localCollection.upsert(id, obj);
           console.log("added by remote");
-        } else {
-          // this remote addition just confirms the local addition
-          delete self._changeSets.local[id];
         }
       },
 
       changed(id, fields) {
-        if (!self._changeSets.local[id]) {
-          var obj = fields;
-          self._changeSets.remote[id] = true;
-          // remote changed invalidate local changes:
-          delete self._changeSets.local[id]; 
-          localCollection.update(id, obj);
-          console.log("changed by remote");
-        } else {
+        if (self._syncDirtyTimeout) {
+          self._rescheduleSyncDirty();
+        }
+        if (self._changeSets.local[id]
+            && self._changeSets.local[id]._synced) {
+          // remote confirmed update
           delete self._changeSets.local[id];
+        } else {
+
+          var obj = fields;
+          obj._id = id;
+          self._changeSets.remote[id] = true;
+          // remote changes invalidates local changes:
+          delete self._changeSets.local[id]; 
+          localCollection.upsert(id, obj);
+          console.log("changed by remote");
         }
       },
 
       removed(id) {
-        if (!self._changeSets.local[id]) {
+        if (self._syncDirtyTimeout) {
+          self._rescheduleSyncDirty();
+        }
+        if (self._changeSets.local[id]
+            && self._changeSets.local[id]._synced) {
+          // remote confirmed removal
+          delete self._changeSets.local[id];
+        } else {
           self._changeSets.remote[id] = true;
-          // remote changed invalidate local changes:
+          // remote changes invalidates local changes:
           delete self._changeSets.local[id]; 
           localCollection.remove(id);
           console.log("removed by remote");
-        } else {
-          delete self._changeSets.local[id];
         }
       }
     });
@@ -164,7 +204,8 @@ export default class ServerSyncClient {
           if (!self._changeSets.remote[id]) {
             // this addition was not initiated by remote; sync up remote
             self._changeSets.local[id] = { 
-                collectionName: collectionName
+                collectionName: collectionName,
+                _synced: true
             };
             var obj = fields;
             obj._id = id;
@@ -187,12 +228,15 @@ export default class ServerSyncClient {
         changed(id, fields) {
           if (!self._changeSets.remote[id]) {
             // this change was not initiated by remote; sync up remote
-            self._changeSets.local[id] = { 
-                collectionName: collectionName
-            };
+            if (!self._changeSets.local[id]) {
+              self._changeSets.local[id] = { 
+                collectionName: collectionName,
+                _synced: true
+              };
+            }
 
+            var obj = fields;
             if (self._ready && self._connection.status().connected) {
-              var obj = fields;
               // obj._updated = Date.now();
               // delete obj._dirty;
               remoteCollection.update(id, obj);
@@ -202,8 +246,11 @@ export default class ServerSyncClient {
               // console.warn("cannot reach server, not updating;",
                            // "local change will be lost on reconnect");
               console.log("update queued until reconnect", id);
-              self._changeSets.local[id].obj = obj;
-              self._changeSets.local[id].action = "update";
+              if (!self._changeSets.local[id].obj) {
+                self._changeSets.local[id].obj = {};
+              }
+              _.extend(self._changeSets.local[id].obj, obj);
+              self._changeSets.local[id].action = "update"; // may overwrite "insert"
             }
           } else {
             // else either self was just changed remotely, or it was
@@ -217,9 +264,10 @@ export default class ServerSyncClient {
         removed(id) {
           if (!self._changeSets.remote[id]) {
             // this removal was not initiated by remote; sync up remote
-            self._changeSets.local[id] = { 
-                collectionName: collectionName
-            };
+            self._changeSets.local[id] = {
+                collectionName: collectionName,
+                _synced: true
+            }; // this will overwrite any updates or inserts, but that's OK
 
             if (self._ready && self._connection.status().connected) {
               remoteCollection.remove(id);
@@ -248,12 +296,39 @@ export default class ServerSyncClient {
 
   /** sync dirty things, but only if not changed remotely */
   _syncDirty(collectionName) {
+    if (this._syncDirtyTimeout) {
+      Meteor.clearTimeout(this._syncDirtyTimeout);
+    }
+    if (!this._connection.status().connected) {
+      console.warn("syncDirty failed;",
+                   "lost connection again before we could sync", 
+                   this._connection.status());
+      return;
+    }
+
     const self = this;
-    console.log("_syncDirty", self._changeSets.local, collectionName);
+
+    // wait for heartbeat:
+    // console.log("connection", self._connection);
+    // const heartbeat = this._connection._heartbeat;
+    // if (!heartbeat) {
+    //   Meteor.setTimeout(function() {
+    //     // console.log("delayed connection", self._connection);
+    //     console.log("waiting for master heartbeat", heartbeat); 
+    //     self._syncDirty(collectionName);
+    //   }, 2000);
+    // }
+
+    // console.log("_syncDirty", self._changeSets.local, collectionName);
+    console.log("_syncDirty");
   
     _.each(self._changeSets.local, function(changeInfo, id) {
 
-      console.log("_syncDirty one", changeInfo, collectionName);
+      changeInfo._synced = true; 
+      // ^ we need to mark this changeInfo as sync, so we can
+      // recognize it when remote confirms it
+
+      // console.log("_syncDirty one", changeInfo, collectionName);
       if (changeInfo.collectionName == collectionName
           || collectionName == undefined) { 
 
@@ -261,11 +336,11 @@ export default class ServerSyncClient {
           self._collections[changeInfo.collectionName].remote;
 
         if (changeInfo.action == "insert") {
-          remoteCollection.insert(changeInfo.obj, function(err, res) {
+          remoteCollection.upsert(id, changeInfo.obj, function(err, res) {
             console.log("insert local -> remote:", id, err, res);
           });
         } else if (changeInfo.action == "update") {
-          remoteCollection.upsert(id, changeInfo.obj, function(err, res) {
+          remoteCollection.upsert(id, {$set: changeInfo.obj}, function(err, res) {
             console.log("update local -> remote:", id, err, res);
           });
         } else if (changeInfo.action == "remove") {
