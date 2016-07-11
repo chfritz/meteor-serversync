@@ -4,7 +4,7 @@ This package provides server-to-server syncing of collections. It is
 modeled along the lines of what clients do, too, i.e., collections are
 locally cached, in case the remote server gets disconnected.
 
-# How it Works
+## How it Works
 
 This uses DDP.connect to connect to a remote server and subscribe to
 collections on it, but also caches that collection in the local
@@ -64,7 +64,10 @@ Meteor.startup(() => {
 
 See https://github.com/chfritz/serversync-example for a full example.
 
-## Write Scenarios
+## Detailed Behavior
+
+This section describes the behavior of serversync in more detail.
+Specifically we consider all possible cases.
 
 ### Online:
 
