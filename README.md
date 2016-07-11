@@ -82,16 +82,12 @@ Master | Slave  | Result Master | Result Slave | Comments
 ---    | ---    | ---           | ---          | --- 
 insert | -      | -             | insert       |
 -      | insert | insert        | -            |
----    | ---    | ---           | ---          | --- 
 update | -      | -             | update       |
 -      | update | update        | -            |
----    | ---    | ---           | ---          | --- 
 remove | -      | -             | remove       |
 -      | remove | remove        | -            |
----    | ---    | ---           | ---          | --- 
 update | update | -             | update (undo own change) | We do conflict resolution at the document level.
 update | remove | -             | update (undo remove) |
 remove | update | -             | remove | 
----    | ---    | ---           | ---          | --- 
 *      | insert | n/a           | n/a          | not possible: we disallow non-unique _ids
 insert | *      | n/a           | n/a          | not possible: we disallow non-unique _ids
