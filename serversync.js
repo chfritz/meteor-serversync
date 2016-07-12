@@ -99,6 +99,8 @@ export default class ServerSyncClient {
       localCollection = options.collection;
     } else {
       localCollection = new Mongo.Collection(collectionName);
+      // always clean the local collection before joining the sync:
+      localCollection.remove({}); 
     }
     this._collections[collectionName].local = localCollection;
 
