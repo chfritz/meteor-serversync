@@ -93,15 +93,13 @@ export default class ServerSyncClient {
     this._collections[collectionName].remote = remoteCollection;
     // local collection
     let localCollection = null;
-    if (options.mode == "read"
-        && options.collection) {
-
+    if (options.collection) {
       localCollection = options.collection;
     } else {
       localCollection = new Mongo.Collection(collectionName);
-      // always clean the local collection before joining the sync:
-      localCollection.remove({}); 
     }
+    // always clean the local collection before joining the sync:
+    localCollection.remove({}); 
     this._collections[collectionName].local = localCollection;
 
     // add subscription arguments
