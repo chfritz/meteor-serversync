@@ -10,6 +10,9 @@ import { DDP } from "meteor/ddp-client";
  */
 var ignore = 0;
 
+let localChangeSet = new Mongo.Collection('_serversync_local-changes');
+
+
 /** Server code */
 export default class ServerSyncClient {
 
@@ -31,6 +34,7 @@ export default class ServerSyncClient {
         _.each(self._collections, function(collectionSet, name) {
           console.log("clearing collection", name);
           ignore = collectionSet.local.remove({});
+          console.log("setting ignore to ", ignore);
         });
 
         self._initialized = true;
@@ -146,7 +150,7 @@ export default class ServerSyncClient {
     // each remote change resets the timer for syncDirty
     remoteCollection.find(query).observeChanges({
       added(id, fields) {
-        if (self._changeSets.local[id]) {
+        if (localChangeSet.findOne(id)) {
           // this remote addition just confirms the local addition
         } else {
           if (self._syncDirtyTimeout) {
@@ -158,12 +162,12 @@ export default class ServerSyncClient {
           localCollection.upsert(id, obj);
           console.log("added by remote");
         }
-        delete self._changeSets.local[id];
+        localChangeSet.remove(id);
       },
 
       changed(id, fields) {
-        if (self._changeSets.local[id]
-            && self._changeSets.local[id]._synced) {
+        const change = localChangeSet.findOne(id);
+        if (change && change._synced) {
           // remote confirmed the update
           console.log("ignoring remote update");
         } else {
@@ -176,7 +180,7 @@ export default class ServerSyncClient {
           self._changeSets.remote[id] = true;
           // remote changes invalidates local changes:
           if (localCollection.findOne(id)) {
-            if (self._changeSets.local[id]) {
+            if (change) {
               // we made local changes as well; overwrite the object
               // completely (don't just patch it)
               localCollection.upsert(id, remoteCollection.findOne(id));
@@ -190,12 +194,12 @@ export default class ServerSyncClient {
           }
           console.log("changed by remote");
         }
-        delete self._changeSets.local[id];
+        localChangeSet.remove(id);
       },
 
       removed(id) {
-        if (self._changeSets.local[id]
-            && self._changeSets.local[id]._synced) {
+        const change = localChangeSet.findOne(id);
+        if (change && change._synced) {
           // remote confirmed removal
           console.log("ignoring remote removal");
         } else {
@@ -208,7 +212,7 @@ export default class ServerSyncClient {
           console.log("removed by remote");
           localCollection.remove(id);
         }
-        delete self._changeSets.local[id];
+        localChangeSet.remove(id);
       }
     });
 
@@ -231,7 +235,7 @@ export default class ServerSyncClient {
 
           if (!self._changeSets.remote[id]) {
             // this addition was not initiated by remote; sync up remote
-            self._changeSets.local[id] = {
+            let change = {
               collectionName: collectionName
             };
             var obj = fields;
@@ -241,14 +245,16 @@ export default class ServerSyncClient {
             if (self._ready 
                 && self._connection.status().connected) {
 
-              self._changeSets.local[id]._synced = true;
+              change._synced = true;
+              localChangeSet.upsert(id, change);
               remoteCollection.upsert(id, obj);
               console.log("added to remote");
             } else {
               // can't sync this right now, add to change set
               console.log("insert queued until reconnect", id);
-              self._changeSets.local[id].obj = obj;
-              self._changeSets.local[id].action = "insert";
+              change.obj = obj;
+              change.action = "insert";
+              localChangeSet.upsert(id, change);
             }
           } else {
             // acknowledged, clear flag for next update
@@ -261,8 +267,9 @@ export default class ServerSyncClient {
           
           if (!self._changeSets.remote[id]) {
             // this change was not initiated by remote; sync up remote
-            if (!self._changeSets.local[id]) {
-              self._changeSets.local[id] = {
+            let change = localChangeSet.findOne(id);
+            if (!change) {
+              change = {
                 collectionName: collectionName
               };
             }
@@ -272,29 +279,30 @@ export default class ServerSyncClient {
               if (self._connection.status().connected) {
                 // obj._updated = Date.now();
                 // delete obj._dirty;
-                self._changeSets.local[id]._synced = true;
+                change._synced = true;
+                localChangeSet.upsert(id, change);
                 remoteCollection.upsert(id, {$set: obj});
                 console.log("changed in remote");
               } else {
                 console.log("update queued until reconnect", id);
-                if (!self._changeSets.local[id].obj) {
-                  self._changeSets.local[id].obj = {};
+                if (!change.obj) {
+                  change.obj = {};
                 }
-                _.extend(self._changeSets.local[id].obj, obj);
-                self._changeSets.local[id].action = "update"; // may overwrite "insert"
+                _.extend(change.obj, obj);
+                change.action = "update"; // may overwrite "insert"
+                localChangeSet.upsert(id, change);
               }
             } else {
               // we have not yet connected to master, but we have
               // inserted this document earlier (and potentially
               // already updated it, too), so it's OK to edit
-              if (self._changeSets.local[id] 
-                  && self._changeSets.local[id].action ) {
+              if (change && change.action ) {
                 console.log("updated newly inserted item", id);
-                _.extend(self._changeSets.local[id].obj, obj);
-                self._changeSets.local[id].action = "update"; // may overwrite "insert"
+                _.extend(change.obj, obj);
+                change.action = "update"; // may overwrite "insert"
+                localChangeSet.upsert(id, change);
               }
             }
-
           } else {
             // else either self was just changed remotely, or it was
             // marked dirty by offline insert locally; don't do anything
@@ -305,7 +313,8 @@ export default class ServerSyncClient {
         },
 
         removed(id) {
-          console.log("removed", id);
+          console.log("removed", id, self._changeSets.remote[id], 
+                      self._ready, self._connection.status().connected);
           if (ignore-- > 0) {
             // ignore these removals, they are from the cleanup
             return;
@@ -313,18 +322,20 @@ export default class ServerSyncClient {
 
           if (!self._changeSets.remote[id]) {
             // this removal was not initiated by remote; sync up remote
-            self._changeSets.local[id] = {
+            let change = {
               collectionName: collectionName
             }; // this will overwrite any updates or inserts, but that's OK
 
             if (self._ready) { 
               if (self._connection.status().connected) {
-                self._changeSets.local[id]._synced = true;
+                change._synced = true;
+                localChangeSet.upsert(id, change);            
                 remoteCollection.remove(id);
                 console.log("removed in remote");
               } else {
                 console.log("removal queued until reconnect", id);
-                self._changeSets.local[id].action = "remove";
+                change.action = "remove";
+                localChangeSet.upsert(id, change);            
               }
             }
           } else {
@@ -365,17 +376,19 @@ export default class ServerSyncClient {
     //   }, 2000);
     // }
 
-    console.log("_syncDirty", self._changeSets.local);
+    console.log("_syncDirty", localChangeSet.find().fetch());
     // console.log("_syncDirty");
 
-    _.each(self._changeSets.local, function(changeInfo, id) {
+    _.each(localChangeSet.find().fetch(), function(changeInfo) {
+      const id = changeInfo._id;
 
       if (changeInfo._synced) {
         // why does this happen?
+        localChangeSet.remove(id);
         return;
       }
 
-      changeInfo._synced = true;
+      localChangeSet.update(id, {$set: { _synced: true }});
       // ^ we need to mark this changeInfo as sync, so we can
       // recognize it when remote confirms it
 
@@ -396,6 +409,7 @@ export default class ServerSyncClient {
               localCollection.upsert(id, changeInfo.obj);
             }
           });
+
         } else if (changeInfo.action == "update") {
           remoteCollection.upsert(id, {$set: changeInfo.obj}, function(err, res) {
             console.log("update local -> remote:", id, err, res);
@@ -406,6 +420,7 @@ export default class ServerSyncClient {
               localCollection.upsert(id, remoteCollection.findOne(id));
             }
           });
+
         } else if (changeInfo.action == "remove") {
           remoteCollection.remove(id, function(err, res) {
             console.log("removed local -> remote:", id, err, res);
