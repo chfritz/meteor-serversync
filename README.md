@@ -69,12 +69,12 @@ See https://github.com/chfritz/serversync-example for a full example.
 This section describes the behavior of serversync in more detail.
 Specifically we consider all possible cases.
 
-### Online:
+### Online
 
 This is easy. Any insertion, update, or removal on either side should
 sync to the other side immediately.
 
-### Offline:
+### Offline
 
 This is the tricky part. We need to consider all possible combinations
 on master and slave during the offline period. In the following table
@@ -94,3 +94,25 @@ update | remove | -             | update (undo remove) |
 remove | update | -             | remove | 
 *      | insert | n/a           | n/a          | not possible: we disallow non-unique _ids
 insert | *      | n/a           | n/a          | not possible: we disallow non-unique _ids
+
+
+### Not running
+
+This is different from disconnected because the app may lose it's
+state or the initial sync may not have happened yet.
+
+The following time lines show the cases I thought of and how they are
+being handled.
+
+```
+M = Master, S = Slave, - = running (up), _ = not running (down)
+(I)nsert, (D)elete, X = anything
+
+M   ___-IX--  _-X----  _--X-__---  _-____-X-
+S   _-IX----  ___-X--  _-___---X-  _--X-----
+
+# Cases that require a persistent change set:
+M   _____---IX-
+S   _-IX-__----
+
+```
