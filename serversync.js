@@ -8,7 +8,7 @@ import { DDP } from "meteor/ddp-client";
       need to stop the app before being able to reconnect?
 
  */
-
+var ignore = 0;
 
 /** Server code */
 export default class ServerSyncClient {
@@ -22,17 +22,31 @@ export default class ServerSyncClient {
     this._connection.onReconnect = function() {
       console.log("reconnected");
 
-      if (!this._initialized) {
+      if (!self._initialized) {
         onConnected && onConnected();
-        this._initialized = true;
-      } else {
-        // Note: on reconnect, Meteor will perform a complete refresh of
-        // the remote collections, i.e., it will remove all items and
-        // re-add them. This also means that DDP.connect + subscribe are
-        // only useful for fairly small collections (in terms of bytes).
-        self._rescheduleSyncDirty();
-      }
+
+        // always clean the local collection before joining the sync,
+        // otherwise we won't get destructive changes the master made
+        // while we weren't running
+        _.each(self._collections, function(collectionSet, name) {
+          console.log("clearing collection", name);
+          ignore = collectionSet.local.remove({});
+        });
+
+        self._initialized = true;
+      } 
+      // else {
+      self._rescheduleSyncDirty();
+      // }
     }
+
+    // We are impatient: forcing a higher rate of reconnection
+    // attempts when unable to reach master
+    Meteor.setInterval(function() {
+      if (self._connection.status().status == "waiting") {
+        self._connection.reconnect();
+      }
+    }, 10000);
 
 
     // objects of the form { remote: .. , local: .., subscription: ..,
@@ -69,6 +83,8 @@ export default class ServerSyncClient {
       @param options: an object containing:
       - mode: "write" (default), or "read"
       - args: subscription arguments (as given to Meteor.subscribe(.., args))
+      - onReady: a callback function for when the subscription becomes
+        ready (initial sync is complete)
   */
   sync(collectionName, options = {mode: "write", args: []}) {
     const self = this;
@@ -98,8 +114,6 @@ export default class ServerSyncClient {
     } else {
       localCollection = new Mongo.Collection(collectionName);
     }
-    // always clean the local collection before joining the sync:
-    localCollection.remove({}); 
     this._collections[collectionName].local = localCollection;
 
     // add subscription arguments
@@ -124,6 +138,7 @@ export default class ServerSyncClient {
     });
     const subscription = this._connection.subscribe.apply(this._connection, args);
     this._collections[collectionName].subscription = subscription;
+    const collectionSet = this._collections[collectionName];
 
     // ---------------------------------------------------------
 
@@ -161,10 +176,16 @@ export default class ServerSyncClient {
           self._changeSets.remote[id] = true;
           // remote changes invalidates local changes:
           if (localCollection.findOne(id)) {
-            localCollection.upsert(id, {$set: obj});
+            if (self._changeSets.local[id]) {
+              // we made local changes as well; overwrite the object
+              // completely (don't just patch it)
+              localCollection.upsert(id, remoteCollection.findOne(id));
+            } else {
+              localCollection.upsert(id, {$set: obj});
+            }
           } else {
             // document was removed locally (presumably while
-            // offline), recreate it
+            // offline), recreate it completely (not just the change)
             localCollection.insert(remoteCollection.findOne(id));
           }
           console.log("changed by remote");
@@ -196,9 +217,18 @@ export default class ServerSyncClient {
 
     // sync up (from local to remote)
     if (options.mode != "read") {
+      let initialCount = localCollection.find().count();
       localCollection.find().observeChanges({
 
         added(id, fields) {
+          // count initial insertions; these are the insertions that
+          // we see on startup of the app, i.e., these are already in
+          // the DB and are just being added to the meteor collection
+          if (initialCount-- > 0) {
+            // ignore them
+            return;
+          }
+
           if (!self._changeSets.remote[id]) {
             // this addition was not initiated by remote; sync up remote
             self._changeSets.local[id] = {
@@ -208,17 +238,17 @@ export default class ServerSyncClient {
             obj._id = id;
 
             // only sync back up after initial sync down
-            if (self._ready) { 
-              if (self._connection.status().connected) {
-                self._changeSets.local[id]._synced = true;
-                remoteCollection.upsert(id, obj);
-                console.log("added to remote");
-              } else {
-                // can't sync this right now, add to change set
-                console.log("insert queued until reconnect", id);
-                self._changeSets.local[id].obj = obj;
-                self._changeSets.local[id].action = "insert";
-              }
+            if (self._ready 
+                && self._connection.status().connected) {
+
+              self._changeSets.local[id]._synced = true;
+              remoteCollection.upsert(id, obj);
+              console.log("added to remote");
+            } else {
+              // can't sync this right now, add to change set
+              console.log("insert queued until reconnect", id);
+              self._changeSets.local[id].obj = obj;
+              self._changeSets.local[id].action = "insert";
             }
           } else {
             // acknowledged, clear flag for next update
@@ -227,6 +257,8 @@ export default class ServerSyncClient {
         },
 
         changed(id, fields) {
+          console.log("changed", id);
+          
           if (!self._changeSets.remote[id]) {
             // this change was not initiated by remote; sync up remote
             if (!self._changeSets.local[id]) {
@@ -236,7 +268,7 @@ export default class ServerSyncClient {
             }
 
             var obj = fields;
-            if (self._ready) { 
+            if (self._ready) {
               if (self._connection.status().connected) {
                 // obj._updated = Date.now();
                 // delete obj._dirty;
@@ -244,9 +276,6 @@ export default class ServerSyncClient {
                 remoteCollection.upsert(id, {$set: obj});
                 console.log("changed in remote");
               } else {
-                // localCollection.update(id, {$set: {"_dirty": true}});
-                // console.warn("cannot reach server, not updating;",
-                // "local change will be lost on reconnect");
                 console.log("update queued until reconnect", id);
                 if (!self._changeSets.local[id].obj) {
                   self._changeSets.local[id].obj = {};
@@ -254,7 +283,18 @@ export default class ServerSyncClient {
                 _.extend(self._changeSets.local[id].obj, obj);
                 self._changeSets.local[id].action = "update"; // may overwrite "insert"
               }
+            } else {
+              // we have not yet connected to master, but we have
+              // inserted this document earlier (and potentially
+              // already updated it, too), so it's OK to edit
+              if (self._changeSets.local[id] 
+                  && self._changeSets.local[id].action ) {
+                console.log("updated newly inserted item", id);
+                _.extend(self._changeSets.local[id].obj, obj);
+                self._changeSets.local[id].action = "update"; // may overwrite "insert"
+              }
             }
+
           } else {
             // else either self was just changed remotely, or it was
             // marked dirty by offline insert locally; don't do anything
@@ -265,6 +305,12 @@ export default class ServerSyncClient {
         },
 
         removed(id) {
+          console.log("removed", id);
+          if (ignore-- > 0) {
+            // ignore these removals, they are from the cleanup
+            return;
+          }
+
           if (!self._changeSets.remote[id]) {
             // this removal was not initiated by remote; sync up remote
             self._changeSets.local[id] = {
@@ -277,13 +323,6 @@ export default class ServerSyncClient {
                 remoteCollection.remove(id);
                 console.log("removed in remote");
               } else {
-                // queue up for remote deletion
-                // self._locallyDeleted.push({
-                //   collectionName: collectionName,
-                //   id: id
-                // });
-                // console.warn("cannot reach server, not removing;",
-                // "local change will be lost on reconnect");
                 console.log("removal queued until reconnect", id);
                 self._changeSets.local[id].action = "remove";
               }
@@ -299,7 +338,7 @@ export default class ServerSyncClient {
   }
 
 
-  /** sync dirty things, but only if not changed remotely */
+  /** sync dirty things up to master, but only if not changed remotely */
   _syncDirty(collectionName) {
     if (this._syncDirtyTimeout) {
       Meteor.clearTimeout(this._syncDirtyTimeout);
@@ -350,10 +389,22 @@ export default class ServerSyncClient {
         if (changeInfo.action == "insert") {
           remoteCollection.upsert(id, changeInfo.obj, function(err, res) {
             console.log("insert local -> remote:", id, err, res);
+            const localCollection =
+              self._collections[changeInfo.collectionName].local;
+            if (!localCollection.findOne(id)) {
+              // this item was removed locally, due to initial clean up; re-add it
+              localCollection.upsert(id, changeInfo.obj);
+            }
           });
         } else if (changeInfo.action == "update") {
           remoteCollection.upsert(id, {$set: changeInfo.obj}, function(err, res) {
             console.log("update local -> remote:", id, err, res);
+            const localCollection =
+              self._collections[changeInfo.collectionName].local;
+            if (!localCollection.findOne(id)) {
+              // this item was removed locally, due to initial clean up; re-add it
+              localCollection.upsert(id, remoteCollection.findOne(id));
+            }
           });
         } else if (changeInfo.action == "remove") {
           remoteCollection.remove(id, function(err, res) {
