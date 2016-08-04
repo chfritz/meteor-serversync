@@ -44,6 +44,10 @@ to the sync function:
   offline, but if the server makes changes while offline, these
   changes will overwrite any local changes on reconnect.
 
+  Note that local changes are detected using collection hooks. This
+  means that direct mongodb manipulations (e.g., via mongorestore)
+  will *not* be detected/synced.
+
 
 ## Example
 
