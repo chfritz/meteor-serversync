@@ -54,25 +54,38 @@ to the sync function:
 ```js
 Meteor.startup(() => {
   // connect to master:
-  a = new ServerSyncClient("http://localhost:3000");
+  a = new ServerSyncClient("http://localhost:3000", {
+    onConnect: function() {
+      console.log("connected to master");
+    },
+    onReconnect: function() {
+      console.log("reconnected to master");
+    },
+    beforeSyncDirty: function(count) {
+      console.log("beforeSyncDirty", count);
+    },
+    afterSyncDirty: function(count) {
+      console.log("afterSyncDirty", count);
+    }
+  });
   a.sync('items', {  // sync the "items" collection from the master
     onReady: function() {
       var coll = a.getCollection('items');
       // do something with this collection (e.g., publish it locally)
       console.log("ready", coll.find().count());
     },
-    beforeSyncUp: function(type, doc) { 
-      console.log("beforeSyncUp", type, doc);
+    beforeSyncUp: function(type, id, doc) { 
+      console.log("beforeSyncUp", type, id, doc);
     },
-    beforeSyncDown: function(type, doc) { 
-      console.log("beforeSyncDown", type, doc);
+    beforeSyncDown: function(type, id, doc) { 
+      console.log("beforeSyncDown", type, id, doc);
     },
-    afterSyncUp: function(type, doc) { 
-      console.log("afterSyncUp", type, doc);
+    afterSyncUp: function(type, id, doc) { 
+      console.log("afterSyncUp", type, id, doc);
     },
-    afterSyncDown: function(type, doc) { 
-      console.log("afterSyncDown", type, doc);
-    }
+    afterSyncDown: function(type, id, doc) { 
+      console.log("afterSyncDown", type, id, doc);
+    },
     args: [Date.now()] // arguments to pass to publication function on server
   });
 });
