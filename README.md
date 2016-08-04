@@ -61,6 +61,18 @@ Meteor.startup(() => {
       // do something with this collection (e.g., publish it locally)
       console.log("ready", coll.find().count());
     },
+    beforeSyncUp: function(type, doc) { 
+      console.log("beforeSyncUp", type, doc);
+    },
+    beforeSyncDown: function(type, doc) { 
+      console.log("beforeSyncDown", type, doc);
+    },
+    afterSyncUp: function(type, doc) { 
+      console.log("afterSyncUp", type, doc);
+    },
+    afterSyncDown: function(type, doc) { 
+      console.log("afterSyncDown", type, doc);
+    }
     args: [Date.now()] // arguments to pass to publication function on server
   });
 });

@@ -10,17 +10,27 @@ let ChangeSet = new Mongo.Collection('_serversync_change-set');
 /** Server code */
 export default class ServerSyncClient {
 
-  /** establish the connection and setup onReconnect handler */
-  constructor(URL, onConnected) {
+  /** establish the connection and setup onReconnect handler 
+      @param options:
+      - onConnect: a function to be called upon initial connection
+      - onReconnect: a function to be called upon reconnect
+      - beforeSyncDirty: a function to be called before syncing
+        offline changes
+      - afterSyncDirty: a function to be called after syncing
+        offline changes
+
+  */
+  constructor(URL, options) {
     const self = this;
 
     this._initialized = false;
     this._connection = DDP.connect(URL);
+    this._options = options;
     this._connection.onReconnect = function() {
       logger("reconnected");
 
       if (!self._initialized) {
-        onConnected && onConnected();
+        options.onConnect && options.onConnect();
 
         // always clean the local collection before joining the sync,
         // otherwise we won't get destructive changes the master made
@@ -31,7 +41,9 @@ export default class ServerSyncClient {
         });
 
         self._initialized = true;
-      } 
+      } else {
+        options.onReconnect && options.onReconnect();
+      }
 
       self._rescheduleSyncDirty();
     }
@@ -88,10 +100,6 @@ export default class ServerSyncClient {
       - beforeSyncDown: a function to be called before syncing down
       - afterSyncUp: a function to be called after syncing up
       - afterSyncDown: a function to be called after syncing down
-      - beforeSyncDirty: a function to be called before syncing
-        offline changes
-      - afterSyncDirty: a function to be called after syncing
-        offline changes
   */
   sync(collectionName, options = {mode: "write", args: []}) {
     const self = this;
@@ -160,9 +168,9 @@ export default class ServerSyncClient {
           }
           var obj = fields;
           obj._id = id;
-          options.beforeSyncDown && options.beforeSyncDown("insert", obj);
+          options.beforeSyncDown && options.beforeSyncDown("insert", id, obj);
           localCollection.direct.upsert(id, obj);
-          options.afterSyncDown && options.afterSyncDown("insert", obj);
+          options.afterSyncDown && options.afterSyncDown("insert", id, obj);
           logger("added by remote");
         }
         ChangeSet.remove(id);
@@ -180,7 +188,7 @@ export default class ServerSyncClient {
 
           var obj = fields;
           obj._id = id;
-          options.beforeSyncDown && options.beforeSyncDown("update", obj);
+          options.beforeSyncDown && options.beforeSyncDown("update", id, obj);
           // remote changes invalidates local changes:
           if (localCollection.findOne(id)) {
             if (change) {
@@ -196,7 +204,7 @@ export default class ServerSyncClient {
             // offline), recreate it completely (not just the change)
             localCollection.direct.insert(remoteCollection.findOne(id));
           }
-          options.afterSyncDown && options.afterSyncDown("update", obj);
+          options.afterSyncDown && options.afterSyncDown("update", id, obj);
           logger("changed by remote");
         }
         ChangeSet.remove(id);
@@ -214,10 +222,9 @@ export default class ServerSyncClient {
 
           // remote changes invalidates local changes:
           logger("removed by remote");
-          const obj = {_id: id};
-          options.beforeSyncDown && options.beforeSyncDown("remove", obj);
+          options.beforeSyncDown && options.beforeSyncDown("remove", id);
           localCollection.direct.remove(id);
-          options.afterSyncDown && options.afterSyncDown("remove", obj);
+          options.afterSyncDown && options.afterSyncDown("remove", id);
         }
         ChangeSet.remove(id);
       }
@@ -246,9 +253,9 @@ export default class ServerSyncClient {
             
             change._synced = true;
             ChangeSet.upsert(id, change);
-            options.beforeSyncUp && options.beforeSyncUp("insert", obj);
+            options.beforeSyncUp && options.beforeSyncUp("insert", id, obj);
             remoteCollection.upsert(id, obj);
-            options.afterSyncUp && options.afterSyncUp("insert", obj);
+            options.afterSyncUp && options.afterSyncUp("insert", id, obj);
             logger("added to remote");
           } else {
             // can't sync this right now, add to change set
@@ -278,9 +285,9 @@ export default class ServerSyncClient {
             if (self._connection.status().connected) {
               change._synced = true;
               ChangeSet.upsert(id, change);
-              options.beforeSyncUp && options.beforeSyncUp("update", obj);
+              options.beforeSyncUp && options.beforeSyncUp("update", id, obj);
               remoteCollection.upsert(id, {$set: obj});
-              options.afterSyncUp && options.afterSyncUp("update", obj);
+              options.afterSyncUp && options.afterSyncUp("update", id, obj);
               logger("changed in remote");
             } else {
               logger("update queued until reconnect", id);
@@ -317,14 +324,13 @@ export default class ServerSyncClient {
             if (self._connection.status().connected) {
               change._synced = true;
               ChangeSet.upsert(id, change);
-              options.beforeSyncUp && options.beforeSyncUp("remove", doc);
+              options.beforeSyncUp && options.beforeSyncUp("remove", id, doc);
               remoteCollection.remove(id);
-              options.afterSyncUp && options.afterSyncUp("remove", doc);
+              options.afterSyncUp && options.afterSyncUp("remove", id, doc);
               logger("removed in remote");
             } else {
               logger("removal queued until reconnect", id);
               change.action = "remove";
-              change.obj = doc;
               ChangeSet.upsert(id, change);            
             }
           }
@@ -333,7 +339,8 @@ export default class ServerSyncClient {
   }
 
 
-  /** sync dirty things up to master, but only if not changed remotely */
+  /** sync any offline changes that were not overwritten by remote up
+      to master */
   _syncDirty(collectionName) {
 
     if (this._syncDirtyTimeout) {
@@ -350,6 +357,9 @@ export default class ServerSyncClient {
 
     const self = this;
     logger("_syncDirty", ChangeSet.find().fetch());
+    const numberOfChanges = ChangeSet.find().count(); 
+    this._options.beforeSyncDirty 
+      && this._options.beforeSyncDirty(numberOfChanges);
 
     _.each(ChangeSet.find().fetch(), function(changeInfo) {
       const id = changeInfo._id;
@@ -373,7 +383,7 @@ export default class ServerSyncClient {
           self._collections[changeInfo.collectionName].options;
 
         options.beforeSyncUp 
-          && options.beforeSyncUp(changeInfo.action, changeInfo.obj);
+          && options.beforeSyncUp(changeInfo.action, id, changeInfo.obj);
 
         if (changeInfo.action == "insert") {
           remoteCollection.upsert(id, changeInfo.obj, function(err, res) {
@@ -407,9 +417,12 @@ export default class ServerSyncClient {
         }
 
         options.afterSyncUp 
-          && options.afterSyncUp(changeInfo.action, changeInfo.obj);
+          && options.afterSyncUp(changeInfo.action, id, changeInfo.obj);
       }
     });
+
+    this._options.afterSyncDirty 
+      && this._options.afterSyncDirty(numberOfChanges);
   }
 
 
