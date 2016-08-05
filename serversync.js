@@ -194,9 +194,10 @@ export default class ServerSyncClient {
             if (change) {
               // we made local changes as well; overwrite the object
               // completely (don't just patch it)
-              localCollection.direct.upsert(
-                id, remoteCollection.findOne(id));
+              let obj = remoteCollection.findOne(id);
+              localCollection.direct.upsert(id, obj);
             } else {
+              delete obj._id;
               localCollection.direct.upsert(id, {$set: obj});
             }
           } else {
