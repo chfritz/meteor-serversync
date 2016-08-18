@@ -1,11 +1,16 @@
 import { Meteor } from "meteor/meteor";
 import { DDP } from "meteor/ddp-client";
 
-// const logger = console.log;
-const logger = function(){};
+const logger = console.log;
+// const logger = function(){};
 
+/** the local change set, i.e., things that have changed locally but
+    have not yet been synced up, e.g., because we were/are offline */
 let ChangeSet = new Mongo.Collection('_serversync_change-set');
 
+/** set of remote changes, stored here for batch application to local
+    collection once sync is complete */
+let remoteChanges = [];
 
 /** Server code */
 export default class ServerSyncClient {
@@ -25,6 +30,9 @@ export default class ServerSyncClient {
 
     this._initialized = false;
     this._connection = DDP.connect(URL);
+    // this._connection.call("", function(e, r) {
+    //   console.log("fake method call", e, r);
+    // });
     this._options = options;
     this._connection.onReconnect = function() {
       logger("reconnected");
@@ -45,6 +53,17 @@ export default class ServerSyncClient {
         options.onReconnect && options.onReconnect();
       }
 
+      // self._connection.call("", function(e, r) {
+      //   logger("sync complete");
+        
+      //   // apply remote changes to local before applying local changes
+      //   // to remote (they may overwrite local changes)
+      //   self._applyChanges();
+        
+      //   // apply local change (to remote)
+      //   self._syncDirty();
+      // });
+        
       self._rescheduleSyncDirty();
     }
 
@@ -156,31 +175,74 @@ export default class ServerSyncClient {
 
     // ---------------------------------------------------------
 
+    let syncInProgress = false;
+    /** put a marker in the DDP pipe by calling a non-existant method.
+        This will be put in the queue on the server and tell us when
+        the current batch of messages is done (which will be once the
+        callback comes back).
+    */
+    function placeMarker() {
+      if (!syncInProgress) {
+        self._connection.call("", function(e, r) {
+          logger("sync complete");       
+          // apply remote changes to local before applying local changes
+          // to remote (they may overwrite local changes)
+          self._applyChanges();
+          syncInProgress = false;
+
+          // we can now also apply local changes to remote, since we
+          // know that sync down is done; no need to wait for timeout
+          self._syncDirty();
+        });
+        syncInProgress = true;
+
+        // now that sync down has started we can use the DPP pipe
+        // marker to indicate when it is safe to sync up, remove timer
+        if (self._syncDirtyTimeout) {
+          Meteor.clearTimeout(self._syncDirtyTimeout);
+          this._syncDirtyTimeout = null;
+        }
+      }
+    }
+
     // sync down (from remote to local)
     // each remote change resets the timer for syncDirty
     remoteCollection.find(query).observeChanges({
       added(id, fields) {
         if (ChangeSet.findOne(id)) {
           // this remote addition just confirms the local addition
+          ChangeSet.remove(id);
         } else {
           if (self._syncDirtyTimeout) {
             self._rescheduleSyncDirty();
+            // TODO: replace this by sync-done marker
           }
           var obj = fields;
           obj._id = id;
-          options.beforeSyncDown && options.beforeSyncDown("insert", id, obj);
-          localCollection.direct.upsert(id, obj);
-          options.afterSyncDown && options.afterSyncDown("insert", id, obj);
-          logger("added by remote");
+          placeMarker();
+          remoteChanges.push({
+            collectionName: collectionName,
+            action: "insert",
+            _id: id, 
+            obj: obj,
+            options: options
+          });
         }
-        ChangeSet.remove(id);
       },
 
       changed(id, fields) {
         const change = ChangeSet.findOne(id);
+        // if (fields._updated) {
+        //   // our marker has come back, this batch of DDP messages is done
+        //   logger("sync complete");
+        //   syncInProgress = false;
+        //   self._applyChanges();
+        // } else 
         if (change && change._synced) {
           // remote confirmed the update
           logger("ignoring remote update");
+          ChangeSet.remove(id);
+
         } else {
           if (self._syncDirtyTimeout) {
             self._rescheduleSyncDirty();
@@ -188,27 +250,15 @@ export default class ServerSyncClient {
 
           var obj = fields;
           obj._id = id;
-          options.beforeSyncDown && options.beforeSyncDown("update", id, obj);
-          // remote changes invalidates local changes:
-          if (localCollection.findOne(id)) {
-            if (change) {
-              // we made local changes as well; overwrite the object
-              // completely (don't just patch it)
-              let obj = remoteCollection.findOne(id);
-              localCollection.direct.upsert(id, obj);
-            } else {
-              delete obj._id;
-              localCollection.direct.upsert(id, {$set: obj});
-            }
-          } else {
-            // document was removed locally (presumably while
-            // offline), recreate it completely (not just the change)
-            localCollection.direct.insert(remoteCollection.findOne(id));
-          }
-          options.afterSyncDown && options.afterSyncDown("update", id, obj);
-          logger("changed by remote");
+          placeMarker();
+          remoteChanges.push({
+            collectionName: collectionName,
+            action: "update",
+            _id: id, 
+            obj: obj,
+            options: options
+          });
         }
-        ChangeSet.remove(id);
       },
 
       removed(id) {
@@ -216,18 +266,20 @@ export default class ServerSyncClient {
         if (change && change._synced) {
           // remote confirmed removal
           logger("ignoring remote removal");
+          ChangeSet.remove(id);
         } else {
           if (self._syncDirtyTimeout) {
             self._rescheduleSyncDirty();
           }
 
-          // remote changes invalidates local changes:
-          logger("removed by remote");
-          options.beforeSyncDown && options.beforeSyncDown("remove", id);
-          localCollection.direct.remove(id);
-          options.afterSyncDown && options.afterSyncDown("remove", id);
+          placeMarker();
+          remoteChanges.push({
+            collectionName: collectionName,
+            action: "remove",
+            _id: id,
+            options: options
+          });
         }
-        ChangeSet.remove(id);
       }
     });
 
@@ -337,6 +389,63 @@ export default class ServerSyncClient {
           }
         });
     }
+  }
+
+
+  /** Batch apply all remote changes. This is called when sync down is
+      complete. Batching is necessary to ensure sync atomicity, i.e.,
+      avoid partial syncs. This can be important when changes in two
+      documents or collections need to happen simultaneous, e.g., to
+      ensure data consistency */
+  _applyChanges() {
+    logger("starting applyChanges");
+    const self = this;
+
+    _.each(remoteChanges, function(change) {
+      const localCollection = self._collections[change.collectionName].local;
+      const options = change.options;
+
+      options.beforeSyncDown 
+        && options.beforeSyncDown(change.action, change._id, change.obj);
+
+      if (change.action == "insert") {
+        localCollection.direct.upsert(change._id, change.obj);
+
+      } else if (change.action == "update") {
+
+        // remote changes invalidates local changes:
+        const localChange = ChangeSet.findOne(change._id);
+        if (localCollection.findOne(change._id)) {
+          if (localChange) {
+            // we made local changes as well; overwrite the object
+            // completely (don't just patch it)
+            let obj = remoteCollection.findOne(change._id);
+            localCollection.direct.upsert(change._id, obj);
+          } else {
+            delete change.obj._id;
+            localCollection.direct.upsert(change._id, {$set: change.obj});
+          }
+        } else {
+          // document was removed locally (presumably while
+          // offline), recreate it completely (not just the change)
+          localCollection.direct.insert(remoteCollection.findOne(change._id));
+        }
+
+      } else if (change.action == "remove") {
+        // remote changes invalidates local changes:
+        localCollection.direct.remove(change._id);
+      }
+
+      options.afterSyncDown 
+        && options.afterSyncDown(change.action, change._id, change.obj);
+
+
+      logger(change.action, ": remote -> local");
+      ChangeSet.remove(change._id);
+    });
+
+    remoteChanges = [];
+    logger("applyChanges done");
   }
 
 

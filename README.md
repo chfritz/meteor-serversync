@@ -46,7 +46,16 @@ to the sync function:
 
   Note that local changes are detected using collection hooks. This
   means that direct mongodb manipulations (e.g., via mongorestore)
-  will *not* be detected/synced.
+  will *not* be detected/synced. It also means that you can avoid
+  syncing changes by using the `.direct` methods.  
+
+
+New in Version 0.5: Changes from the server are applied in batch,
+i.e., only once all data is received are changes going to be applied
+to the local collection. This ensure sync atomicity and prevents data
+inconstencies due to partial syncs. This can be important when changes
+in multiple documents or collections need to be done simulatenously in
+order for the database to be consistent/valid.
 
 
 ## Example

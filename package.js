@@ -1,6 +1,6 @@
 Package.describe({
   name: 'chfritz:serversync',
-  version: '0.4.3',
+  version: '0.4.9',
   summary: 'Synchronize collections across multiple meteor servers (belonging to separate apps)',
   git: 'https://github.com/chfritz/meteor-serversync',
   documentation: 'README.md'
