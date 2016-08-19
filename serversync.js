@@ -1,3 +1,9 @@
+/** 
+    ServerSync Package
+    
+    @author Christian Fritz
+*/
+
 import { Meteor } from "meteor/meteor";
 import { DDP } from "meteor/ddp-client";
 
@@ -30,10 +36,28 @@ export default class ServerSyncClient {
 
     this._initialized = false;
     this._connection = DDP.connect(URL);
-    // this._connection.call("", function(e, r) {
-    //   console.log("fake method call", e, r);
-    // });
     this._options = options;
+
+    this._remoteServerSyncCollection = 
+      new Mongo.Collection("_serversync", this._connection);
+    this._connection.subscribe("_serversync");
+    this._remoteServerSyncCollection.find().observeChanges({
+      added: function(id, fields) {
+        logger("_serversync collection added", id, fields);
+        if (fields.date == self._marker) {
+          logger("sync done");
+          self._applyChanges();
+        }
+      },
+      changed: function(id, fields) {
+        logger("_serversync collection changed", id, fields);
+        if (fields.date == self._marker) {
+          logger("sync done");
+          self._applyChanges();
+        }
+      }
+    });
+    
     this._connection.onReconnect = function() {
       logger("reconnected");
 
@@ -89,6 +113,61 @@ export default class ServerSyncClient {
 
     // whether or not the initial sync is completed
     this._ready = false;
+  }
+
+
+    /** put a marker in the DDP pipe by calling a non-existant method.
+        This will be put in the queue on the server and tell us when
+        the current batch of messages is done (which will be once the
+        callback comes back).
+    */
+  _placeMarker(remoteCollection) {
+    const self = this;
+    if (!this._syncInProgress) {
+      // this._connection.call('_serversync_ACK', function(e, r) {
+      //   logger('ACK');
+      //   self._syncInProgress = false;
+      //   self._applyChanges();
+      // });
+      this._syncInProgress = true;
+      this._md5 = this._connection.call('_serversync_md5');
+      logger("actual remote md5", this._md5);
+      // todo: make this work for multiple collections
+    }
+     
+    const md5 = CryptoJS.MD5(JSON.stringify(remoteCollection.find().fetch())).toString();
+    logger("local-remote md5", md5);
+    if (md5 == this._md5) {
+      logger('md5s match');
+      self._syncInProgress = false;
+      self._applyChanges();       
+    }
+
+    // this._marker = Date.now();
+    // logger("setting marker", this._marker);
+    // this._remoteServerSyncCollection.upsert("last", {_id: "last", date: this._marker});
+    
+    // syncInProgress = true;
+
+    // now that sync down has started we can use the DPP pipe
+    // marker to indicate when it is safe to sync up, remove timer
+    // if (self._syncDirtyTimeout) {
+    //   Meteor.clearTimeout(self._syncDirtyTimeout);
+    //   this._syncDirtyTimeout = null;
+    // }
+    // self._connection.call("", function(e, r) {
+    //   logger("sync complete");       
+    //   // apply remote changes to local before applying local changes
+    //   // to remote (they may overwrite local changes)
+    //   self._applyChanges();
+    //   syncInProgress = false;
+
+    //   // we can now also apply local changes to remote, since we
+    //   // know that sync down is done; no need to wait for timeout
+    //   self._syncDirty();
+    // });
+
+    // }
   }
 
   /** schedule a syncDirty for some time from now, if it is already
@@ -175,36 +254,6 @@ export default class ServerSyncClient {
 
     // ---------------------------------------------------------
 
-    let syncInProgress = false;
-    /** put a marker in the DDP pipe by calling a non-existant method.
-        This will be put in the queue on the server and tell us when
-        the current batch of messages is done (which will be once the
-        callback comes back).
-    */
-    function placeMarker() {
-      if (!syncInProgress) {
-        self._connection.call("", function(e, r) {
-          logger("sync complete");       
-          // apply remote changes to local before applying local changes
-          // to remote (they may overwrite local changes)
-          self._applyChanges();
-          syncInProgress = false;
-
-          // we can now also apply local changes to remote, since we
-          // know that sync down is done; no need to wait for timeout
-          self._syncDirty();
-        });
-        syncInProgress = true;
-
-        // now that sync down has started we can use the DPP pipe
-        // marker to indicate when it is safe to sync up, remove timer
-        if (self._syncDirtyTimeout) {
-          Meteor.clearTimeout(self._syncDirtyTimeout);
-          this._syncDirtyTimeout = null;
-        }
-      }
-    }
-
     // sync down (from remote to local)
     // each remote change resets the timer for syncDirty
     remoteCollection.find(query).observeChanges({
@@ -219,7 +268,7 @@ export default class ServerSyncClient {
           }
           var obj = fields;
           obj._id = id;
-          placeMarker();
+          logger("added");
           remoteChanges.push({
             collectionName: collectionName,
             action: "insert",
@@ -227,18 +276,19 @@ export default class ServerSyncClient {
             obj: obj,
             options: options
           });
+          self._placeMarker(remoteCollection);
         }
       },
 
       changed(id, fields) {
         const change = ChangeSet.findOne(id);
-        // if (fields._updated) {
-        //   // our marker has come back, this batch of DDP messages is done
-        //   logger("sync complete");
-        //   syncInProgress = false;
-        //   self._applyChanges();
-        // } else 
-        if (change && change._synced) {
+        logger(fields);
+        if (fields._syncInProgress && syncInProgress) {
+          // our marker has come back, this batch of DDP messages is done
+          logger("sync complete");
+          syncInProgress = false;
+          self._applyChanges();          
+        } else if (change && change._synced) {
           // remote confirmed the update
           logger("ignoring remote update");
           ChangeSet.remove(id);
@@ -250,7 +300,7 @@ export default class ServerSyncClient {
 
           var obj = fields;
           obj._id = id;
-          placeMarker();
+          logger("updated");
           remoteChanges.push({
             collectionName: collectionName,
             action: "update",
@@ -258,6 +308,7 @@ export default class ServerSyncClient {
             obj: obj,
             options: options
           });
+          self._placeMarker(remoteCollection);
         }
       },
 
@@ -272,13 +323,14 @@ export default class ServerSyncClient {
             self._rescheduleSyncDirty();
           }
 
-          placeMarker();
+          logger("removed");
           remoteChanges.push({
             collectionName: collectionName,
             action: "remove",
             _id: id,
             options: options
           });
+          self._placeMarker(remoteCollection);
         }
       }
     });
@@ -438,7 +490,6 @@ export default class ServerSyncClient {
 
       options.afterSyncDown 
         && options.afterSyncDown(change.action, change._id, change.obj);
-
 
       logger(change.action, ": remote -> local");
       ChangeSet.remove(change._id);
