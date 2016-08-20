@@ -38,6 +38,19 @@ export default class ServerSyncClient {
     this._connection = DDP.connect(URL);
     this._options = options;
 
+    var _send = this._connection._send;
+    this._connection._send = function (obj) {
+      var message = JSON.stringify(obj);
+      logger("[ddp monitor] send (" + message.length + "B)", message);
+      _send.call(this, obj);
+    };
+    
+    // log received messages
+    this._connection._stream.on('message', function (message) { 
+      logger("[ddp monitor] receive (" + message.length + "B)", message);
+    });
+
+
     this._remoteServerSyncCollection = 
       new Mongo.Collection("_serversync", this._connection);
     this._connection.subscribe("_serversync");
