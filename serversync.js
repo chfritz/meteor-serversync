@@ -2,6 +2,27 @@
     ServerSync Package
     
     @author Christian Fritz
+
+
+    TODO:
+     - DDP resyncs completely on reconnect after all
+
+       - added server component that manually manages the publication;
+         stores a history of DDP messages and patches; stores for each
+         connected client (id'ed) a timestamp of the last sent
+         message; only sends missed ones on reconnect
+
+       - on client: use ddp messages directly for updating local
+         connection (because the ddp messages contain "ready")
+     
+     - ensure down-sync atomicity
+
+     - ensure up-sync atomicity
+
+     - potentially: implement MD5 based diffing, for full-sync without
+       sending all data (create an interval-based tree and compute
+       md5s for all nodes in the tree; only sync differing ones)
+  
 */
 
 import { Meteor } from "meteor/meteor";
@@ -39,37 +60,38 @@ export default class ServerSyncClient {
     this._options = options;
 
     var _send = this._connection._send;
+    // log sent messages
     this._connection._send = function (obj) {
       var message = JSON.stringify(obj);
       logger("[ddp monitor] send (" + message.length + "B)", message);
       _send.call(this, obj);
-    };
-    
+      // _send.call(this, {something: "mytest", data: {a: [1,2,3]}});
+    };   
     // log received messages
     this._connection._stream.on('message', function (message) { 
       logger("[ddp monitor] receive (" + message.length + "B)", message);
     });
 
 
-    this._remoteServerSyncCollection = 
-      new Mongo.Collection("_serversync", this._connection);
-    this._connection.subscribe("_serversync");
-    this._remoteServerSyncCollection.find().observeChanges({
-      added: function(id, fields) {
-        logger("_serversync collection added", id, fields);
-        if (fields.date == self._marker) {
-          logger("sync done");
-          self._applyChanges();
-        }
-      },
-      changed: function(id, fields) {
-        logger("_serversync collection changed", id, fields);
-        if (fields.date == self._marker) {
-          logger("sync done");
-          self._applyChanges();
-        }
-      }
-    });
+    // this._remoteServerSyncCollection = 
+    //   new Mongo.Collection("_serversync", this._connection);
+    // this._connection.subscribe("_serversync");
+    // this._remoteServerSyncCollection.find().observeChanges({
+    //   added: function(id, fields) {
+    //     logger("_serversync collection added", id, fields);
+    //     if (fields.date == self._marker) {
+    //       logger("sync done");
+    //       self._applyChanges();
+    //     }
+    //   },
+    //   changed: function(id, fields) {
+    //     logger("_serversync collection changed", id, fields);
+    //     if (fields.date == self._marker) {
+    //       logger("sync done");
+    //       self._applyChanges();
+    //     }
+    //   }
+    // });
     
     this._connection.onReconnect = function() {
       logger("reconnected");
@@ -263,6 +285,7 @@ export default class ServerSyncClient {
       this._connection.subscribe.apply(this._connection, args);
     this._collections[collectionName].subscription = subscription;
     this._collections[collectionName].options = options;
+    this._collections[collectionName].subscriptionArgs = args;
     const collectionSet = this._collections[collectionName];
 
     // ---------------------------------------------------------
