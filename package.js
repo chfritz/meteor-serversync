@@ -12,7 +12,7 @@ Package.onUse(function(api) {
   api.use('underscore');
   api.use('mongo');
   api.use('matb33:collection-hooks@0.8.1');
-  api.mainModule('serversync.js');
+  api.mainModule('main.js');
 });
 
 Package.onTest(function(api) {

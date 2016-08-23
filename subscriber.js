@@ -40,7 +40,7 @@ let ChangeSet = new Mongo.Collection('_serversync_change-set');
 let remoteChanges = [];
 
 /** Server code */
-export default class ServerSyncClient {
+export default class ServerSyncSubscriber {
 
   /** establish the connection and setup onReconnect handler 
       @param options:
