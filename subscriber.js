@@ -58,6 +58,10 @@ export default class ServerSyncSubscriber {
     this._initialized = false;
     this._connection = DDP.connect(URL);
     this._options = options;
+    this._options.id = this._options.id || Meteor.absoluteUrl();
+
+    // last time we heard from the server
+    this._lastTimestamp = 0;
 
     var _send = this._connection._send;
     // log sent messages
@@ -68,7 +72,8 @@ export default class ServerSyncSubscriber {
       // _send.call(this, {something: "mytest", data: {a: [1,2,3]}});
     };   
     // log received messages
-    this._connection._stream.on('message', function (message) { 
+    this._connection._stream.on('message', function (message) {
+      self._lastTimestamp = Date.now();
       logger("[ddp monitor] receive (" + message.length + "B)", message);
     });
 
@@ -121,6 +126,15 @@ export default class ServerSyncSubscriber {
         
       //   // apply local change (to remote)
       //   self._syncDirty();
+      // });
+
+      // resubscribe (WIP)
+      // _.each(self._collections, function(obj, collectionName) {
+      //   const subscription = 
+      //     obj.subscribe.apply(this._connection, args);
+      //   this._collections[collectionName].subscription = subscription;
+      //   this._collections[collectionName].options = options;
+      //   this._collections[collectionName].subscriptionArgs = args;
       // });
         
       self._rescheduleSyncDirty();
@@ -266,6 +280,7 @@ export default class ServerSyncSubscriber {
 
     // add subscription arguments
     let args = options.args || [];
+    args.unshift(self._options.id);
     args.unshift(collectionName);
     args.push({
       onReady: function() {
