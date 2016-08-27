@@ -22,6 +22,12 @@
      - potentially: implement MD5 based diffing, for full-sync without
        sending all data (create an interval-based tree and compute
        md5s for all nodes in the tree; only sync differing ones)
+
+
+     - #HERE: Try simply increasing the heartbeatTimeout on
+        DDP.connect to something rather high:
+       https://github.com/meteor/meteor/blob/devel/packages/ddp-server/livedata_server.js#L1307
+
   
 */
 
