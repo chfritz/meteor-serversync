@@ -29,7 +29,27 @@ export default class ServerSyncClient {
     const self = this;
 
     this._initialized = false;
-    this._connection = DDP.connect(URL);
+    this._connection = DDP.connect(URL, {
+      heartbeatInterval: 1200000,
+      heartbeatTimeout: 1200000 // TESTING
+    });
+
+    // -- Logging
+    var _send = this._connection._send;
+    // log sent messages
+    this._connection._send = function (obj) {
+      var message = JSON.stringify(obj);
+      logger("[ddp monitor] send (" + message.length + "B)", message);
+      _send.call(this, obj);
+      // _send.call(this, {something: "mytest", data: {a: [1,2,3]}});
+    };   
+    // log received messages
+    this._connection._stream.on('message', function (message) {
+      self._lastTimestamp = Date.now();
+      logger("[ddp monitor] receive (" + message.length + "B)", message);
+    });
+    // -----
+
     // this._connection.call("", function(e, r) {
     //   console.log("fake method call", e, r);
     // });
@@ -70,10 +90,12 @@ export default class ServerSyncClient {
     // We are impatient: forcing a higher rate of reconnection
     // attempts when unable to reach master
     Meteor.setInterval(function() {
+      // logger("connection:", self._connection.status().status);
       if (self._connection.status().status == "waiting") {
+        logger("waiting for reconnection..");
         self._connection.reconnect();
       }
-    }, 10000);
+    }, 5000);
 
 
     /** 
@@ -152,6 +174,7 @@ export default class ServerSyncClient {
 
     // add subscription arguments
     let args = options.args || [];
+    args.unshift(Meteor.absoluteUrl());
     args.unshift(collectionName);
     args.push({
       onReady: function() {
