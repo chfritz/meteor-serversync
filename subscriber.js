@@ -24,11 +24,27 @@
        md5s for all nodes in the tree; only sync differing ones)
 
 
-     - #HERE: Try simply increasing the heartbeatTimeout on
-        DDP.connect to something rather high:
-       https://github.com/meteor/meteor/blob/devel/packages/ddp-server/livedata_server.js#L1307
+   New Plan: Git like
+   
+     - DDP sync of a patch-collection; client and server only add
+       patches.
 
+     - automatically insert "commits", which are the MD5 of *all*
+       synced collections (or a defined collection-set?), 10 seconds
+       after new patches are added.
+
+     - on the client, as usual, do not allow changes to be added to
+       patch-collection until after we have caught up on all patches
+       from the server and are connected (i.e., keep the changeset)
+
+     - in addition, client sends last applied commit hash to server
+       via method and server only publishes patches to this client
+       that are newer than its last applied commit (to save DDP
+       resync traffic)
   
+     - server clears patch collection every once in a while (once a
+       week or so). New connections that do not have a commit in the
+       collection get started with a full-sync.
 */
 
 import { Meteor } from "meteor/meteor";
