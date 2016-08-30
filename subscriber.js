@@ -31,7 +31,8 @@
 
      - automatically insert "commits", which are the MD5 of *all*
        synced collections (or a defined collection-set?), 10 seconds
-       after new patches are added.
+       after new patches are added (manually, not by sync). Provide
+       functions to pause/resume this and to manually insert commits.
 
      - on the client, as usual, do not allow changes to be added to
        patch-collection until after we have caught up on all patches
@@ -39,8 +40,10 @@
 
      - in addition, client sends last applied commit hash to server
        via method and server only publishes patches to this client
-       that are newer than its last applied commit (to save DDP
-       resync traffic)
+       that are newer than its last applied commit (to save DDP resync
+       traffic) -- or can we just update the subscription from the
+       client on reconnect? (test what happens when we re-subscribe
+       with different parameters)
   
      - server clears patch collection every once in a while (once a
        week or so). New connections that do not have a commit in the

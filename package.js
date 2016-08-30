@@ -12,6 +12,7 @@ Package.onUse(function(api) {
   api.use('underscore');
   api.use('mongo');
   api.use('matb33:collection-hooks@0.8.1');
+  api.use('jparker:crypto-md5@0.1.1');
   api.mainModule('main.js');
 });
 
